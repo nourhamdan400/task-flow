@@ -1,0 +1,43 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function okDesc(d) { return !('description' in d) || (d.description is string && d.description.size() <= 1000); }
+    function validProject(d) { return d.name is string && d.name.size() >= 3 && d.name.size() <= 80 && okDesc(d); }
+
+    match /users/{uid} {
+      allow get: if signedIn();
+      allow list: if signedIn() && request.query.limit <= 1;   // email lookup only, one result
+      allow create, update: if request.auth.uid == uid;
+    }
+
+    match /projects/{pid} {
+      allow read: if signedIn() && (resource == null || request.auth.uid in resource.data.memberIds);
+      allow create: if signedIn() && validProject(request.resource.data)
+        && request.resource.data.ownerId == request.auth.uid
+        && request.resource.data.memberIds == [request.auth.uid];
+      allow update: if signedIn() && resource.data.ownerId == request.auth.uid
+        && request.resource.data.ownerId == request.auth.uid
+        && request.auth.uid in request.resource.data.memberIds
+        && validProject(request.resource.data);
+      allow delete: if signedIn() && resource.data.ownerId == request.auth.uid;
+
+      match /tasks/{tid} {
+        function proj() { return get(/databases/$(database)/documents/projects/$(pid)).data; }
+        function member() { return signedIn() && request.auth.uid in proj().memberIds; }
+        function validTask(d) {
+          return d.title is string && d.title.size() >= 3 && d.title.size() <= 120 && okDesc(d)
+            && d.status in ['todo', 'in_progress', 'done']
+            && d.priority in ['low', 'medium', 'high']
+            && (d.assigneeId == null || d.assigneeId in proj().memberIds);
+        }
+        allow read: if member();
+        allow create: if member() && request.resource.data.createdBy == request.auth.uid && validTask(request.resource.data);
+        allow update: if member() && validTask(request.resource.data)
+          && request.resource.data.createdBy == resource.data.createdBy
+          && (proj().ownerId == request.auth.uid || resource.data.createdBy == request.auth.uid || resource.data.assigneeId == request.auth.uid);
+        allow delete: if member() && (proj().ownerId == request.auth.uid || resource.data.createdBy == request.auth.uid);
+      }
+    }
+  }
+}
